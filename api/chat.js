@@ -10,9 +10,7 @@ export default async function handler(req, res) {
   }
 
   const MS_DOCS_CONTEXT = `
-MICROSOFT DOCS REFERENCE STRUCTURE (fetched from https://learn.microsoft.com/en-us/azure/devops/reference/?view=azure-devops):
-
-The official Azure Boards Configuration & Customization documentation covers:
+MICROSOFT DOCS REFERENCE STRUCTURE (from https://learn.microsoft.com/en-us/azure/devops/reference/?view=azure-devops):
 
 CONFIGURE TEAMS:
 - About teams & Agile tools: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/about-teams-and-settings?view=azure-devops
@@ -31,7 +29,6 @@ INHERITANCE PROCESS CUSTOMIZATION:
 - Add a custom field: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-field?view=azure-devops
 - Add a custom work item type: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-wit?view=azure-devops
 - Customize a workflow: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/customize-process-workflow?view=azure-devops
-- Apply rules to workflow: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/apply-rules-to-workflow-states?view=azure-devops
 - Customize a project: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/customize-process?view=azure-devops
 - Create & manage a process: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/manage-process?view=azure-devops
 
@@ -41,53 +38,101 @@ REFERENCE:
 - Work tracking object limits: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/object-limits?view=azure-devops
 `;
 
-  const SYSTEM_PROMPT = `You are an expert Azure DevOps (ADO) assistant. You have deep knowledge of ADO and are grounded in the official Microsoft documentation.
+  const SYSTEM_PROMPT = `You are an expert Azure DevOps (ADO) assistant grounded in the official Microsoft documentation.
 
 ${MS_DOCS_CONTEXT}
 
-Your primary reference is the official Microsoft ADO documentation at https://learn.microsoft.com/en-us/azure/devops/. When answering:
-1. Use the web_search tool to find the latest information from Microsoft Docs when the question involves specific configuration steps, recent features, or anything that may have changed.
+When answering:
+1. Use the web_search tool to find the latest information from Microsoft Docs when relevant.
 2. Always prefer information from learn.microsoft.com over general knowledge.
-3. When you reference documentation, include the relevant URL so users can read further.
-4. Be concise and practical. Use bullet points and numbered steps for procedural answers.
+3. Include relevant documentation URLs in your answers.
+4. Be concise and practical. Use bullet points and numbered steps for procedures.
 5. Mention where in the ADO UI to find things (e.g. "Project Settings > Boards > Team Configuration").
-6. Cover all ADO areas: Boards, Pipelines, Repos, Test Plans, Artifacts, permissions, process customization, SAFe/Agile alignment, and migrations.
+6. Cover all ADO areas: Boards, Pipelines, Repos, Test Plans, Artifacts, permissions, process customization, SAFe/Agile alignment, and migrations.`;
 
-When uncertain about recent changes, say so and point to the relevant docs URL for verification.`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': process.env.ANTHROPIC_API_KEY,
+    'anthropic-version': '2023-06-01',
+    'anthropic-beta': 'web-search-2025-03-05'
+  };
+
+  const tools = [{ type: 'web_search_20250305', name: 'web_search' }];
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    // First API call
+    let currentMessages = [...messages];
+    let response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'web-search-2025-03-05'
-      },
+      headers,
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        max_tokens: 1500,
         system: SYSTEM_PROMPT,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages
+        tools,
+        messages: currentMessages
       })
     });
 
-    const data = await response.json();
+    let data = await response.json();
 
     if (!response.ok) {
       return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
     }
 
-    const textBlocks = data.content
+    // Agentic loop — handle tool use rounds (max 3 to avoid runaway)
+    let rounds = 0;
+    while (data.stop_reason === 'tool_use' && rounds < 3) {
+      rounds++;
+
+      // Build tool results from all tool_use blocks
+      const toolResults = data.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => ({
+          type: 'tool_result',
+          tool_use_id: b.id,
+          content: b.type === 'tool_use' ? (b.output || '') : ''
+        }));
+
+      // Append assistant turn + tool results to messages
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant', content: data.content },
+        { role: 'user', content: toolResults }
+      ];
+
+      // Follow-up call with tool results
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1500,
+          system: SYSTEM_PROMPT,
+          tools,
+          messages: currentMessages
+        })
+      });
+
+      data = await response.json();
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
+      }
+    }
+
+    // Extract final text response
+    const textBlocks = (data.content || [])
       .filter(b => b.type === 'text')
       .map(b => b.text)
       .join('\n');
 
-    const didSearch = data.content.some(b => b.type === 'tool_use' && b.name === 'web_search');
+    const didSearch = rounds > 0;
 
-    return res.status(200).json({ reply: textBlocks, didSearch });
+    return res.status(200).json({ reply: textBlocks || 'No response generated. Please try again.', didSearch });
+
   } catch (error) {
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('Handler error:', error);
+    return res.status(500).json({ error: 'Internal server error: ' + error.message });
   }
 }
