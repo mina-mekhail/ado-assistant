@@ -47,7 +47,7 @@ When answering:
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-5',
         max_tokens: 1500,
         system: SYSTEM_PROMPT,
         tools: [{ type: 'web_search_20250305', name: 'web_search' }],
@@ -85,7 +85,7 @@ When answering:
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-5',
           max_tokens: 1500,
           system: SYSTEM_PROMPT,
           tools: [{ type: 'web_search_20250305', name: 'web_search' }],
