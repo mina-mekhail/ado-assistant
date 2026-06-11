@@ -3,52 +3,35 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { messages } = req.body;
-
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: 'Invalid request body' });
+  let messages;
+  try {
+    messages = req.body?.messages;
+  } catch(e) {
+    return res.status(400).json({ error: 'Could not parse request body' });
   }
 
-  const MS_DOCS_CONTEXT = `
-MICROSOFT DOCS REFERENCE STRUCTURE (from https://learn.microsoft.com/en-us/azure/devops/reference/?view=azure-devops):
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'messages array is required and must not be empty' });
+  }
 
-CONFIGURE TEAMS:
-- About teams & Agile tools: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/about-teams-and-settings?view=azure-devops
-- Configure team tools: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/manage-teams?view=azure-devops
-- Set team area paths: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-area-paths?view=azure-devops
-- Set team iterations: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-iteration-paths-sprints?view=azure-devops
+  const SYSTEM_PROMPT = `You are an expert Azure DevOps (ADO) assistant grounded in the official Microsoft documentation at https://learn.microsoft.com/en-us/azure/devops/.
 
-CONFIGURE PROJECTS:
-- Configure & customize Boards: https://learn.microsoft.com/en-us/azure/devops/boards/configure-customize?view=azure-devops
-- About projects & scaling up: https://learn.microsoft.com/en-us/azure/devops/organizations/projects/about-projects?view=azure-devops
-- Define area paths: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-area-paths?view=azure-devops
-- Define iteration paths (sprints): https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-iteration-paths-sprints?view=azure-devops
-
-INHERITANCE PROCESS CUSTOMIZATION:
+Key reference URLs:
+- Area paths: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-area-paths?view=azure-devops
+- Iteration paths: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/set-iteration-paths-sprints?view=azure-devops
 - Inheritance process model: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/inheritance-process-model?view=azure-devops
-- Add a custom field: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-field?view=azure-devops
-- Add a custom work item type: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-wit?view=azure-devops
-- Customize a workflow: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/customize-process-workflow?view=azure-devops
-- Customize a project: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/customize-process?view=azure-devops
-- Create & manage a process: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/manage-process?view=azure-devops
-
-REFERENCE:
-- Naming restrictions: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/naming-restrictions?view=azure-devops
-- Workflow states & categories: https://learn.microsoft.com/en-us/azure/devops/boards/work-items/workflow-and-state-categories?view=azure-devops
-- Work tracking object limits: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/object-limits?view=azure-devops
-`;
-
-  const SYSTEM_PROMPT = `You are an expert Azure DevOps (ADO) assistant grounded in the official Microsoft documentation.
-
-${MS_DOCS_CONTEXT}
+- Add custom field: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-field?view=azure-devops
+- Add custom work item type: https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/add-custom-wit?view=azure-devops
+- Configure boards: https://learn.microsoft.com/en-us/azure/devops/boards/configure-customize?view=azure-devops
+- Workflow states: https://learn.microsoft.com/en-us/azure/devops/boards/work-items/workflow-and-state-categories?view=azure-devops
+- Process templates: https://learn.microsoft.com/en-us/azure/devops/boards/work-items/guidance/choose-process?view=azure-devops
 
 When answering:
-1. Use the web_search tool to find the latest information from Microsoft Docs when relevant.
-2. Always prefer information from learn.microsoft.com over general knowledge.
-3. Include relevant documentation URLs in your answers.
-4. Be concise and practical. Use bullet points and numbered steps for procedures.
-5. Mention where in the ADO UI to find things (e.g. "Project Settings > Boards > Team Configuration").
-6. Cover all ADO areas: Boards, Pipelines, Repos, Test Plans, Artifacts, permissions, process customization, SAFe/Agile alignment, and migrations.`;
+- Be concise and practical
+- Use bullet points for lists, numbered steps for procedures
+- Always mention where in the ADO UI to find things (e.g. "Project Settings > Boards > Teams")
+- Include relevant documentation URLs
+- Cover all ADO areas: Boards, Pipelines, Repos, Test Plans, Artifacts, permissions, process customization, SAFe/Agile alignment, and Jira-to-ADO migrations`;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -57,11 +40,9 @@ When answering:
     'anthropic-beta': 'web-search-2025-03-05'
   };
 
-  const tools = [{ type: 'web_search_20250305', name: 'web_search' }];
-
   try {
-    // First API call
-    let currentMessages = [...messages];
+    let currentMessages = messages.map(m => ({ role: m.role, content: m.content }));
+
     let response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers,
@@ -69,7 +50,7 @@ When answering:
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1500,
         system: SYSTEM_PROMPT,
-        tools,
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
         messages: currentMessages
       })
     });
@@ -77,31 +58,29 @@ When answering:
     let data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
+      return res.status(response.status).json({ 
+        error: data.error?.message || `Anthropic API error: ${response.status}` 
+      });
     }
 
-    // Agentic loop — handle tool use rounds (max 3 to avoid runaway)
+    // Agentic loop: handle tool_use rounds
     let rounds = 0;
-    while (data.stop_reason === 'tool_use' && rounds < 3) {
+    while (data.stop_reason === 'tool_use' && rounds < 5) {
       rounds++;
 
-      // Build tool results from all tool_use blocks
-      const toolResults = data.content
-        .filter(b => b.type === 'tool_use')
-        .map(b => ({
-          type: 'tool_result',
-          tool_use_id: b.id,
-          content: b.type === 'tool_use' ? (b.output || '') : ''
-        }));
+      const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
+      const toolResults = toolUseBlocks.map(b => ({
+        type: 'tool_result',
+        tool_use_id: b.id,
+        content: b.output ?? ''
+      }));
 
-      // Append assistant turn + tool results to messages
       currentMessages = [
         ...currentMessages,
         { role: 'assistant', content: data.content },
         { role: 'user', content: toolResults }
       ];
 
-      // Follow-up call with tool results
       response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers,
@@ -109,7 +88,7 @@ When answering:
           model: 'claude-sonnet-4-20250514',
           max_tokens: 1500,
           system: SYSTEM_PROMPT,
-          tools,
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
           messages: currentMessages
         })
       });
@@ -117,22 +96,24 @@ When answering:
       data = await response.json();
 
       if (!response.ok) {
-        return res.status(response.status).json({ error: data.error?.message || 'Anthropic API error' });
+        return res.status(response.status).json({ 
+          error: data.error?.message || `Anthropic API error on round ${rounds}: ${response.status}` 
+        });
       }
     }
 
-    // Extract final text response
-    const textBlocks = (data.content || [])
+    const reply = (data.content || [])
       .filter(b => b.type === 'text')
       .map(b => b.text)
-      .join('\n');
+      .join('\n')
+      .trim();
 
-    const didSearch = rounds > 0;
-
-    return res.status(200).json({ reply: textBlocks || 'No response generated. Please try again.', didSearch });
+    return res.status(200).json({ 
+      reply: reply || 'No response generated. Please try again.',
+      didSearch: rounds > 0
+    });
 
   } catch (error) {
-    console.error('Handler error:', error);
-    return res.status(500).json({ error: 'Internal server error: ' + error.message });
+    return res.status(500).json({ error: 'Server error: ' + error.message });
   }
 }
